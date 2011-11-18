@@ -13,12 +13,20 @@
 # optional:
 #  xdg-open
 
+# others can request their own API key
 api_key='c6e4096833557af81efb8e81130ebe50' # am I not supposed to give this out?
 shared_secret='99a59d8237342a7e'
 
 rtm_api='http://api.rememberthemilk.com/services/rest/'
 
 todo_cfg="$HOME/.todo/config"
+
+# This will put the token in the same directory as this script.
+actiondir=$(dirname $0)
+tokenfile="$actiondir/rtmtoken"
+# to call from subroutines, I found it easier to just give 777 access to the script.
+perm="delete"
+
 
 usage(){
 	echo 'Todo.txt <--> Remember the Milk'
@@ -116,12 +124,34 @@ check_is_complete_on_rtm(){
 		done
 }
 
-push(){
-	perm='write'
-	args="method=rtm.auth.getFrob&api_key=$api_key"
-	api_sig=$(get_sig "$args")
-	url="$rtm_api?$args&api_sig=$api_sig"
-	frob=$(curl -s "$url" | sed -rn 's|^<rsp stat="ok"><frob>(.*)</frob></rsp>$|\1|p')
+# Added to avoid repition and to troubleshoot  - uriel1998
+# Also lets the token persist for a while...
+# And returns a 0 if successful, a 1 if needs reauthorization
+saved_auth(){
+	echo "Checking for saved token..."
+	if [ -f "$tokenfile" ]; then
+		token=$(cat "$tokenfile")
+		args="method=rtm.auth.checkToken&frob=$frob&api_key=$api_key&auth_token=$token"
+		api_sig=$(get_sig "$args")
+		url="$rtm_api?$args&api_sig=$api_sig"
+		temp=$(curl -s "$url")
+		#we have to make all the tokens max permissions for this to work as one subroutine. 0= succeed.
+		checktoken=$(echo "$temp" | grep -c -e "fail" -)
+		if [ $checktoken -gt 0 ]; then
+			echo "Token is expired or incorrect."
+			rm $tokenfile
+			return 1
+		else
+			echo "Token checks out.  Moving onward..."
+		fi
+	else 
+		echo "No saved token found..."
+		return 1
+	fi
+	return 0
+}
+
+get_auth(){
 	args="perms=$perm&frob=$frob&api_key=$api_key"
 	api_sig=$(get_sig "$args")
 	url="http://www.rememberthemilk.com/services/auth/?$args&api_sig=$api_sig"
@@ -129,7 +159,35 @@ push(){
 	args="method=rtm.auth.getToken&frob=$frob&api_key=$api_key"
 	api_sig=$(get_sig "$args")
 	url="$rtm_api?$args&api_sig=$api_sig"
-	token="$(curl -s "$url" | sed -rn 's|^<rsp stat="ok"><auth><token>(.*)</token><perms>'$perm'</perms><user id="(.*)" username="(.*)" fullname="(.*)"/></auth></rsp>$|\1|p')"
+	temp=$(curl -s "$url")
+	token="$(echo "$temp" | sed -n 's/.*<token>\(.*\)<\/token>.*/\1/p' )"
+	echo "$token" > "$tokenfile"
+	echo "Checking token and saved tokenfile..."
+	saved_auth
+	return 
+}
+
+
+get_frob(){
+	args="method=rtm.auth.getFrob&api_key=$api_key"
+	api_sig=$(get_sig "$args")
+	url="$rtm_api?$args&api_sig=$api_sig"
+	# parses the XML returned more cleanly. - uriel1998
+	frob=$(curl -s "$url" | sed -n 's/.*<frob>\(.*\)<\/frob>.*/\1/p' )
+	#frob=$(curl -s "$url" | sed -rn 's|^<rsp stat="ok"><frob>(.*)</frob></rsp>$|\1|p')
+	echo "Frob gotten, is: $frob"
+	return
+}
+
+push(){
+	#consolidated all the api verifications into subroutines here.
+	get_frob
+	saved_auth
+	if [ $? -gt 0 ]; then 
+		echo "Reapplying for token..."
+		get_auth
+	fi
+
 
 	source "$todo_cfg"
 
@@ -223,19 +281,14 @@ push(){
 }
 
 pull(){
-	perm='read'
-	args="method=rtm.auth.getFrob&api_key=$api_key"
-	api_sig=$(get_sig "$args")
-	url="$rtm_api?$args&api_sig=$api_sig"
-	frob=$(curl -s "$url" | sed -rn 's|^<rsp stat="ok"><frob>(.*)</frob></rsp>$|\1|p')
-	args="perms=$perm&frob=$frob&api_key=$api_key"
-	api_sig=$(get_sig "$args")
-	url="http://www.rememberthemilk.com/services/auth/?$args&api_sig=$api_sig"
-	ask_for_authentication "$url"
-	args="method=rtm.auth.getToken&frob=$frob&api_key=$api_key"
-	api_sig=$(get_sig "$args")
-	url="$rtm_api?$args&api_sig=$api_sig"
-	token="$(curl -s "$url" | sed -rn 's|^<rsp stat="ok"><auth><token>(.*)</token><perms>'$perm'</perms><user id="(.*)" username="(.*)" fullname="(.*)"/></auth></rsp>$|\1|p')"
+	#consolidated all the api verifications into subroutines here.
+	get_frob
+	saved_auth
+	if [ $? -gt 0 ]; then 
+		echo "Reapplying for token..."
+		get_auth
+	fi
+
 	source "$todo_cfg"
 
 	if [ ! -z $overwrite_txt ]
