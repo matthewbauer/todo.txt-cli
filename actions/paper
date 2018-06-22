@@ -28,7 +28,7 @@ get_tasks_raw(){
 		return 1
 	fi
 
-	cat "$src"
+	/usr/bin/todo.sh -p list
 }
 
 get_tasks_markdown(){
